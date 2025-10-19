@@ -1,89 +1,74 @@
-
-# Step 1: Calculate Euclidean distances and create preference lists
- # Create preference lists - bots
- # Sort by distance
- # Create preference lists - roles
- #'            '
- 
- 
- # Step 2: Initialize all players + roles = un match
- 
- # Step 3 & 4: Proposals until stable matching
- # Check if player has use up all preferences
-  # Player proposes to next preferred role
-  #evaluates the proposal- if role open = match,role been matched = comp prefs
-   # Find player the role prefers- if prefers new player= unmatch current, Role prefers current match= reject new 
-   # Step 5: Convert to output format 
-
 import numpy as np
 
 def role_assignment(teammate_positions, formation_positions):
 
     n = len(teammate_positions)
    
-
-    def euclid_dist(pos1, pos2):
-        return np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2)
+#calc euclid distance
+    def euclid_dist(x, y):
+        return np.sqrt(np.sum((x - y)**2))
     
 
+   #make prefs list 
+    player_prefs = {}
+    for p_index in range(n):
+        dists = []
+        for r_index in range(n):
+            dist = euclid_dist(teammate_positions[p_index],
+                                     formation_positions[r_index])
+            dists.append((dist, r_index))
+        player_prefs[p_index] = [r_index for dist, r_index in sorted(dists)]
    
-    player_preferences = {}
-    for player_idex in range(n):
-        distances = []
-        for role_index in range(n):
-            dist = euclid_dist(teammate_positions[player_idex],
-                                     formation_positions[role_index])
-            distances.append((dist, role_index))
+    roles_prefs = {}
+    for r_index in range(n):
+        dists = []
+        for p_index in range(n):
+            dist = euclid_dist(formation_positions[r_index],
+                                     teammate_positions[p_index])
+            dists.append((dist, p_index))
+        roles_prefs[r_index] = [p_index for dist, p_index in sorted(dists)]
 
-        distances.sort()
-        player_preferences[player_idex] = [role_index for dist, role_index in distances]
-   
-    roles_preferences = {}
-    for role_index in range(n):
-        distances = []
-        for player_idex in range(n):
-            dist = euclid_dist(formation_positions[role_index],
-                                     teammate_positions[player_idex])
-            distances.append((dist, player_idex))
+    roles_prefs_rank = {
+    r: {p: i for i, p in enumerate(pref_list)}
+    for r, pref_list in roles_prefs.items()
+}
 
-        distances.sort()
-        roles_preferences[role_index] = [player_idex for dist, player_idex in distances]
+#all unmatched at start 
+    unmatched = list(range(n))
+    matches = {r_index: None for r_index in range(n)}
+    proposal_index = {p_index: 0 for p_index in range(n)}  
+#keep proposing til matched stabley 
+    while unmatched:
+        p_index = unmatched.pop(0)
 
-    unmatched_players = list(range(n))
-    current_matches = {role_index: None for role_index in range(n)}
-    proposal_index = {player_idex: 0 for player_idex in range(n)}  
-
-    while unmatched_players:
-        player_idex = unmatched_players.pop(0)
+        if proposal_index[p_index] >= n:
+            continue # this player tried everyone already
        
 
-        if proposal_index[player_idex] >= n:
-            continue
+        r_index = player_prefs[p_index][proposal_index[p_index]]
+        proposal_index[p_index] += 1
        
 
-        role_index = player_preferences[player_idex][proposal_index[player_idex]]
-        proposal_index[player_idex] += 1
-       
-
-        if current_matches[role_index] is None:
-
-            current_matches[role_index] = player_idex
+        if matches[r_index] is None:
+#free role = match
+            matches[r_index] = p_index
         else:
-
-            current_match = current_matches[role_index]
-            current_match_rank = roles_preferences[role_index].index(current_match)
-            new_proposer_rank = roles_preferences[role_index].index(player_idex)
+            #role taken compares prefs
+            curr_match = matches[r_index]
+            curr_match_rank = roles_prefs_rank[r_index][curr_match]
+            new_proposer_rank = roles_prefs_rank[r_index][p_index]
            
-            if new_proposer_rank < current_match_rank:
-                current_matches[role_index] = player_idex
-                unmatched_players.append(current_match)  
+            if new_proposer_rank < curr_match_rank:
+                # role prefers new player
+                matches[r_index] = p_index
+                unmatched.append(curr_match)  
             else:
-                
-                unmatched_players.append(player_idex)  
-    point_preferences = {}
-    for role_index, player_idex in current_matches.items():
-        if player_idex is not None:
-            unum = player_idex + 1  
-            point_preferences[unum] = formation_positions[role_index]
+                 # rejected 
+                unmatched.append(p_index)  
+    point_prefs = {}
+    for r_index, p_index in matches.items():
+        if p_index is not None:
+            unum = p_index + 1  
+            point_prefs[unum] = formation_positions[r_index]
    
-    return point_preferences
+    return point_prefs
