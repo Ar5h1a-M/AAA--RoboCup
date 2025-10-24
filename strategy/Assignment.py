@@ -4,7 +4,7 @@ def role_assignment(teammate_positions, formation_positions):
     point_preferences = {}
     n = len(teammate_positions)
     
-    
+    #player + pos prefs using euclid(Arika)
     player_prefs = {}
     for i in range(n):
         dists = []
@@ -25,7 +25,7 @@ def role_assignment(teammate_positions, formation_positions):
         dists.sort()
         position_prefs[j] = [player for _, player in dists]
     
-    
+    #all unmatched + preposal loop (Arshia)
     free_players = list(range(n))
     position_matches = [None] * n
     proposal_count = [0] * n
