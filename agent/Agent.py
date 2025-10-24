@@ -7,6 +7,9 @@ from strategy.Assignment import role_assignment
 from strategy.Strategy import Strategy 
 
 from formation.Formation import GenerateBasicFormation
+from strategy.DynamicFormation import DynamicFormation
+from strategy.GameModeHandler import GameModeHandler
+from strategy.DecisionMaker import DecisionMaker
 
 
 class Agent(Base_Agent):
@@ -210,54 +213,197 @@ class Agent(Base_Agent):
 
 
 
-    def select_skill(self,strategyData):
-        #--------------------------------------- 2. Decide action
+    def select_skill(self, strategyData):
+        """
+        Main decision-making function for robot behavior
+        Handles all game modes and situations
+        """
         drawer = self.world.draw
-        path_draw_options = self.path_manager.draw_options
-
-
-        #------------------------------------------------------
-        #Role Assignment
-        if strategyData.active_player_unum == strategyData.robot_model.unum: # I am the active player 
-            drawer.annotation((0,10.5), "Role Assignment Phase" , drawer.Color.yellow, "status")
-        else:
-            drawer.clear("status")
-
-        formation_positions = GenerateBasicFormation()
+        W = self.world
+        
+        # ==============================================================
+        # 1. HANDLE SET PIECES (Non-Play On modes)
+        # ==============================================================
+        if strategyData.PM_GROUP != W.MG_OTHER:  # Not play on or game over
+            action_type, target, orientation = self.game_mode_handler.get_set_piece_behavior(strategyData)
+            
+            if action_type == 'kick':
+                drawer.annotation((0, 10.5), "Set Piece: Kicking", drawer.Color.yellow, "status")
+                drawer.line(strategyData.mypos, target, 2, drawer.Color.red, "kick_line")
+                return self.kickTarget(strategyData, strategyData.mypos, target)
+            else:  # action_type == 'move'
+                drawer.annotation((0, 10.5), "Set Piece: Positioning", drawer.Color.yellow, "status")
+                drawer.line(strategyData.mypos, target, 2, drawer.Color.blue, "move_line")
+                return self.move(target, orientation=orientation)
+        
+        # ==============================================================
+        # 2. PLAY ON MODE - DYNAMIC FORMATION & ROLE ASSIGNMENT
+        # ==============================================================
+        
+        # Generate dynamic formation based on ball position
+        formation_positions = DynamicFormation.generate_formation(
+            strategyData.ball_2d, 
+            strategyData.PM_GROUP,
+            self.world.team_side_is_left
+        )
+        
+        # Adjust formation for opponent positions (man-marking)
+        formation_positions = DynamicFormation.adjust_formation_for_opponents(
+            formation_positions,
+            strategyData.opponent_positions,
+            strategyData.ball_2d
+        )
+        
+        # Assign roles using Hungarian algorithm
         point_preferences = role_assignment(strategyData.teammate_positions, formation_positions)
         strategyData.my_desired_position = point_preferences[strategyData.player_unum]
-        strategyData.my_desried_orientation = strategyData.GetDirectionRelativeToMyPositionAndTarget(strategyData.my_desired_position)
-
-        drawer.line(strategyData.mypos, strategyData.my_desired_position, 2,drawer.Color.blue,"target line")
-
-        if not strategyData.IsFormationReady(point_preferences):
-            return self.move(strategyData.my_desired_position, orientation=strategyData.my_desried_orientation)
-        #else:
-        #     return self.move(strategyData.my_desired_position, orientation=strategyData.ball_dir)
-
-
+        strategyData.my_desired_orientation = strategyData.GetDirectionRelativeToMyPositionAndTarget(
+            strategyData.my_desired_position
+        )
+        
+        # Draw formation assignment
+        drawer.line(strategyData.mypos, strategyData.my_desired_position, 2, drawer.Color.blue, "target_line")
+        
+        # ==============================================================
+        # 3. GOALKEEPER SPECIAL BEHAVIOR (Player 1)
+        # ==============================================================
+        if strategyData.player_unum == 1:
+            return self._goalkeeper_behavior(strategyData, drawer)
+        
+        # ==============================================================
+        # 4. ACTIVE PLAYER BEHAVIOR (Closest to ball)
+        # ==============================================================
+        if strategyData.active_player_unum == strategyData.player_unum:
+            drawer.annotation((0, 10.5), "Active Player: Attacking", drawer.Color.yellow, "status")
+            return self._active_player_behavior(strategyData, drawer)
+        
+        # ==============================================================
+        # 5. SUPPORTING PLAYER BEHAVIOR (Not active)
+        # ==============================================================
+        else:
+            drawer.clear("status")
+            return self._supporting_player_behavior(strategyData, drawer)
     
-        #------------------------------------------------------
-        # Example Behaviour
-        target = (15,0) # Opponents Goal
-
-        if strategyData.active_player_unum == strategyData.robot_model.unum: # I am the active player 
-            drawer.annotation((0,10.5), "Pass Selector Phase" , drawer.Color.yellow, "status")
-        else:
-            drawer.clear_player()
-
-        if strategyData.active_player_unum == strategyData.robot_model.unum: # I am the active player 
-            pass_reciever_unum = strategyData.player_unum + 1 # This starts indexing at 1, therefore player 1 wants to pass to player 2
-            if pass_reciever_unum != 6:
-                target = strategyData.teammate_positions[pass_reciever_unum-1] # This is 0 indexed so we actually need to minus 1 
+    
+    def _goalkeeper_behavior(self, strategyData, drawer):
+        """Goalkeeper-specific behavior"""
+        ball_pos = strategyData.ball_2d
+        my_goal = np.array([-15, 0])
+        
+        # Calculate optimal goalkeeper position
+        gk_position = DynamicFormation.generate_goalkeeper_position(ball_pos, my_goal)
+        
+        # If ball is very close and we're the closest, go for it
+        if strategyData.ball_dist < 3.0 and strategyData.active_player_unum == 1:
+            drawer.annotation((0, 10.5), "Goalkeeper: Clearing Ball", drawer.Color.red, "status")
+            
+            # Decide where to clear the ball
+            if ball_pos[0] < -10:  # Ball very close to goal
+                # Clear to sides
+                clear_target = np.array([0, 8 if ball_pos[1] > 0 else -8])
             else:
-                target = (15,0) 
-
-            drawer.line(strategyData.mypos, target, 2,drawer.Color.red,"pass line")
-            return self.kickTarget(strategyData,strategyData.mypos,target)
+                # Boot it forward
+                clear_target = np.array([10, ball_pos[1]])
+            
+            drawer.line(strategyData.mypos, clear_target, 2, drawer.Color.red, "kick_line")
+            return self.kickTarget(strategyData, strategyData.mypos, clear_target)
         else:
-            drawer.clear("pass line")
+            # Stay in position
+            drawer.annotation((0, 10.5), "Goalkeeper: Positioning", drawer.Color.cyan, "status")
+            drawer.line(strategyData.mypos, gk_position, 2, drawer.Color.cyan, "gk_line")
+            return self.move(gk_position, orientation=strategyData.ball_dir)
+    
+    
+    def _active_player_behavior(self, strategyData, drawer):
+        """Behavior for player closest to ball (active player)"""
+        
+        # First, check if we need to reach the ball
+        if strategyData.ball_dist > 0.5:
+            drawer.annotation((0, 10.5), "Active: Approaching Ball", drawer.Color.orange, "status")
+            drawer.line(strategyData.mypos, strategyData.ball_2d, 2, drawer.Color.orange, "approach_line")
+            return self.move(strategyData.ball_2d, orientation=strategyData.ball_dir)
+        
+        # We're close to the ball - make tactical decision
+        action, target = self.decision_maker.decide_action(strategyData)
+        
+        if action == 'shoot':
+            drawer.annotation((0, 10.5), "Active: SHOOTING!", drawer.Color.red, "status")
+            drawer.line(strategyData.mypos, target, 3, drawer.Color.red, "shot_line")
+            return self.kickTarget(strategyData, strategyData.mypos, target, enable_pass_command=True)
+        
+        elif action == 'pass':
+            drawer.annotation((0, 10.5), "Active: Passing", drawer.Color.green, "status")
+            drawer.line(strategyData.mypos, target, 2, drawer.Color.green, "pass_line")
+            drawer.circle(target, 0.5, drawer.Color.green, "pass_target")
+            return self.kickTarget(strategyData, strategyData.mypos, target, enable_pass_command=True)
+        
+        else:  # action == 'dribble'
+            drawer.annotation((0, 10.5), "Active: Dribbling", drawer.Color.yellow, "status")
+            drawer.line(strategyData.mypos, target, 2, drawer.Color.yellow, "dribble_line")
+            
+            # Check if opponents are very close - if so, kick away quickly
+            urgent_threat = False
+            for opp_pos in strategyData.opponent_positions:
+                if opp_pos is not None:
+                    if np.linalg.norm(strategyData.mypos - opp_pos) < 1.5:
+                        urgent_threat = True
+                        break
+            
+            if urgent_threat:
+                # Quick clearance
+                drawer.annotation((0, 10.5), "Active: Under Pressure!", drawer.Color.red, "status")
+                return self.kickTarget(strategyData, strategyData.mypos, target, enable_pass_command=False)
+            else:
+                # Normal dribble
+                return self.move(target, orientation=None, is_aggressive=True)
+    
+    
+    def _supporting_player_behavior(self, strategyData, drawer):
+        """Behavior for supporting players (not active)"""
+        
+        # Check if we're in formation position
+        distance_to_position = np.linalg.norm(
+            strategyData.mypos - strategyData.my_desired_position
+        )
+        
+        # Determine if we should mark an opponent or move to formation
+        mark_target = self._find_opponent_to_mark(strategyData)
+        
+        if mark_target is not None:
+            # Mark opponent
+            drawer.annotation((0, 10.5), "Supporting: Marking", drawer.Color.magenta, "status")
+            drawer.line(strategyData.mypos, mark_target, 2, drawer.Color.magenta, "mark_line")
+            drawer.circle(mark_target, 0.8, drawer.Color.magenta, "mark_circle")
+            return self.move(mark_target, orientation=strategyData.ball_dir)
+        
+        elif distance_to_position > 0.5:
+            # Move to formation position
+            drawer.annotation((0, 10.5), "Supporting: Moving to Position", drawer.Color.blue, "status")
             return self.move(strategyData.my_desired_position, orientation=strategyData.ball_dir)
+        
+        else:
+            # In position - face ball and be ready
+            drawer.annotation((0, 10.5), "Supporting: In Position", drawer.Color.cyan, "status")
+            drawer.clear("target_line")
+            return self.move(strategyData.my_desired_position, orientation=strategyData.ball_dir)
+    
+    
+    def _find_opponent_to_mark(self, strategyData):
+        """
+        Find an opponent to mark if they're dangerous
+        
+        Returns:
+        --------
+        mark_position : ndarray or None
+            Position to move to for marking, or None if no marking needed
+        """
+        my_pos = strategyData.mypos
+        ball_pos = strategyData.ball_2d
+        my_goal = np.array([-15, 0])
+        
+        # Only mark if ball is in our half or midfield
+        if ball_pos[0] > 5:
+            return None
         
 
 
